@@ -7,14 +7,18 @@ Created on Sat Dec  8 12:56:22 2018
 """
 import tensorflow as tf
 import numpy as np
+from utility.grayscale_imagenet import Xception_greyscale
+from tensorflow.keras import models,layers
+from tensorflow.keras import optimizers
 
-
-import pickle
-with open('/home/will/Desktop/kaggle/Whale/train_df.pkl', 'rb') as f:
-    Ids = pickle.load(f)
-with open('/home/will/Desktop/kaggle/Whale/new_whale_val.pkl', 'rb') as f:
-    newWhale = pickle.load(f)
-
+'''
+# test augmentation
+from utility.plotting import aug_compare
+for i in range(10):
+    for img in Ids_train.iloc[i]['Imgs']:
+        img = np.load(img)
+        aug_compare(img, transform,cmap='gray')
+'''
 
 class DataGenerator(tf.keras.utils.Sequence):
 
@@ -24,7 +28,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.transFun = transFun
         self.shuffle = shuffle
         self.HalfBatch = HalfBatch
-        self.y = np.ones(HalfBatch*2,dtype=np.int8) 
+        self.y = np.ones(HalfBatch*2,dtype=np.float32) 
         self.y[HalfBatch:] = 0 # 16 positive, 16 negative examples
         self.on_epoch_end()
 
@@ -37,7 +41,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         indexes = self.Ids.iloc[index*(self.HalfBatch-1):(index+1)*(self.HalfBatch-1)]['Imgs'].tolist()
         indexes.append([self.newWhale[index]])
         X1,X2 = self.__data_generation([self.__create2(i) for i in indexes])
-        return (X1,X2), self.y
+        return [X1,X2], self.y
 
     def on_epoch_end(self):
         if self.shuffle == True:
@@ -55,8 +59,8 @@ class DataGenerator(tf.keras.utils.Sequence):
         
     def __data_generation(self, indexes):
         imgs_list = [[np.load(img) for img in group] for group in indexes]
-        imgs_list = [[self.transFun(group[0]),self.transFun(group[0])] if len(group)==1 
-                      else [self.transFun(group[0]),self.transFun(group[1])] for group in imgs_list]
+        imgs_list = [[self.transFun(group[0])[:,:,np.newaxis],self.transFun(group[0])[:,:,np.newaxis]] if len(group)==1 
+                      else [self.transFun(group[0])[:,:,np.newaxis],self.transFun(group[1])[:,:,np.newaxis]] for group in imgs_list]
         X1,X2 = list(zip(*imgs_list))
         r = np.random.randint(0,self.HalfBatch)
         X1,X2 = list(X1),list(X2)
@@ -65,4 +69,74 @@ class DataGenerator(tf.keras.utils.Sequence):
         return np.array(X1),np.array(X2)
     
     
+''' build model '''    
+conv_base = Xception_greyscale((256,256,1),'max',False)
+feature_model = models.Sequential()
+feature_model.add(conv_base)
+feature_model.add(layers.Dense(1024,activation=tf.sigmoid))
+
+img1 = layers.Input(shape=(256,256,1))
+img2 = layers.Input(shape=(256,256,1))
+feature1 = feature_model(img1)
+feature2 = feature_model(img2)
+
+output = layers.Lambda(lambda features: tf.reduce_mean(features[0]*features[1],axis=1))([feature1,feature2])
+model = models.Model([img1,img2],output)
+
+def loss_fun_factory(margin_p=0.95,margin_n=0.1):
+    # margin_p for positive, margin_n for negative examples
+    def loss(y_true,y_pred):
+        return -1 * y_true * tf.minimum(y_pred,margin_p) + (1-y_true) * tf.maximum(y_pred,margin_n)
+    return loss
+
+loss_ = loss_fun_factory()
+model.compile(loss=loss_,
+optimizer=optimizers.Adam(lr=1e-3),
+metrics=[loss_])
+
+
+''' set up generators '''
+
+import pickle
+from albumentations import ShiftScaleRotate,Cutout,RandomContrast,RandomBrightness,Compose
+from utility.albumentations_helper import create_transform
+import time
+
+with open('/home/will/Desktop/kaggle/Whale/train_df.pkl', 'rb') as f:
+    Ids_train = pickle.load(f)
+with open('/home/will/Desktop/kaggle/Whale/new_whale_train.pkl', 'rb') as f:
+    newWhale_train = pickle.load(f)
+with open('/home/will/Desktop/kaggle/Whale/val_df.pkl', 'rb') as f:
+    Ids_val = pickle.load(f)
+with open('/home/will/Desktop/kaggle/Whale/new_whale_val.pkl', 'rb') as f:
+    newWhale_val = pickle.load(f)
+
+aug = Compose([RandomContrast(p=0.2),RandomBrightness(p=0.2),
+                ShiftScaleRotate(shift_limit=0.03,rotate_limit=15,scale_limit=0.02,p=1),Cutout(p=0.5)])
+transform = create_transform(aug)    
+
+gen_train = DataGenerator(Ids_train,newWhale_train,transform)
+gen_val = DataGenerator(Ids_val,newWhale_val,transform)
+
+
+''' train model '''
+
+start = time.time()
+history = model.fit_generator(
+          gen_train,
+          validation_data = gen_val,
+          epochs=1,
+          use_multiprocessing=True,workers=4,max_queue_size=20)
+end = time.time()
+print('time:{}'.format(end - start))
+
+
+
+
+
+
+
+
+    
+
     
