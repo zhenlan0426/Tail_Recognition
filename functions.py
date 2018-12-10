@@ -11,6 +11,7 @@ from utility.grayscale_imagenet import Xception_greyscale
 from tensorflow.keras import models,layers
 from tensorflow.keras import optimizers
 
+
 '''
 # test augmentation
 from utility.plotting import aug_compare
@@ -73,14 +74,16 @@ class DataGenerator(tf.keras.utils.Sequence):
 conv_base = Xception_greyscale((256,256,1),'max',False)
 feature_model = models.Sequential()
 feature_model.add(conv_base)
-feature_model.add(layers.Dense(1024,activation=tf.sigmoid))
+#feature_model.add(layers.Dense(1024,activation=tf.sigmoid))
+feature_model.add(layers.Dense(1024))
 
 img1 = layers.Input(shape=(256,256,1))
 img2 = layers.Input(shape=(256,256,1))
 feature1 = feature_model(img1)
 feature2 = feature_model(img2)
 
-output = layers.Lambda(lambda features: tf.reduce_mean(features[0]*features[1],axis=1))([feature1,feature2])
+#output = layers.Lambda(lambda features: tf.reduce_mean(features[0]*features[1],axis=1,keepdims=True))([feature1,feature2])
+output = layers.Lambda(lambda features: tf.sigmoid(tf.reduce_mean(features[0]*features[1],axis=1,keepdims=True)))([feature1,feature2])
 model = models.Model([img1,img2],output)
 
 def loss_fun_factory(margin_p=0.95,margin_n=0.1):
@@ -93,6 +96,7 @@ loss_ = loss_fun_factory()
 model.compile(loss=loss_,
 optimizer=optimizers.Adam(lr=1e-3),
 metrics=[loss_])
+
 
 
 ''' set up generators '''
@@ -121,22 +125,24 @@ gen_val = DataGenerator(Ids_val,newWhale_val,transform)
 
 ''' train model '''
 
+
+'''reset weights
+from tensorflow.keras.initializers import glorot_uniform
+from tensorflow.keras import backend as K
+session = K.get_session()
+dense_layer = model.layers[2].layers[1]
+dense_layer.set_weights([glorot_uniform()(dense_layer.get_weights()[0].shape).eval(session=session),
+                         np.zeros_like(dense_layer.get_weights()[1],dtype=np.float32)])
+#K.clear_session()
+'''
+
 start = time.time()
 history = model.fit_generator(
           gen_train,
           validation_data = gen_val,
-          epochs=1,
-          use_multiprocessing=True,workers=4,max_queue_size=20)
+          epochs=5,
+          use_multiprocessing=True,workers=3,max_queue_size=20)
 end = time.time()
 print('time:{}'.format(end - start))
 
 
-
-
-
-
-
-
-    
-
-    
