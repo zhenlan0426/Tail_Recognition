@@ -7,7 +7,6 @@ Created on Sat Dec  8 12:56:22 2018
 """
 import tensorflow as tf
 import numpy as np
-from utility.grayscale_imagenet import Xception_greyscale
 from tensorflow.keras import models,layers
 from tensorflow.keras import optimizers
 
@@ -23,10 +22,11 @@ for i in range(10):
 
 class DataGenerator(tf.keras.utils.Sequence):
 
-    def __init__(self, Ids, newWhale, transFun, shuffle=True,HalfBatch=16):
+    def __init__(self, Ids, newWhale, transFun, color, shuffle=True,HalfBatch=16):
         self.Ids = Ids # df with first column being w ID, second being list of imgs for each w
         self.newWhale = newWhale # a list of img for new whale
         self.transFun = transFun
+        self.color = color
         self.shuffle = shuffle
         self.HalfBatch = HalfBatch
         self.y = np.ones(HalfBatch*2,dtype=np.float32) 
@@ -41,7 +41,8 @@ class DataGenerator(tf.keras.utils.Sequence):
         'Generate one batch of data'
         indexes = self.Ids.iloc[index*(self.HalfBatch-1):(index+1)*(self.HalfBatch-1)]['Imgs'].tolist()
         indexes.append([self.newWhale[index]])
-        X1,X2 = self.__data_generation([self.__create2(i) for i in indexes])
+        X1,X2 = self.__data_generation_color([self.__create2(i) for i in indexes]) if self.color else \
+                self.__data_generation([self.__create2(i) for i in indexes])
         return [X1,X2], self.y
 
     def on_epoch_end(self):
@@ -66,83 +67,165 @@ class DataGenerator(tf.keras.utils.Sequence):
         r = np.random.randint(0,self.HalfBatch)
         X1,X2 = list(X1),list(X2)
         X1.extend(X1)
-        X2.extend([X2[(i+r)%self.HalfBatch] for i in range(16)])
+        X2.extend([X2[(i+r)%self.HalfBatch] for i in range(self.HalfBatch)])
         return np.array(X1),np.array(X2)
     
+    def __data_generation_color(self, indexes):
+        imgs_list = [[np.load(img) for img in group] for group in indexes]
+        imgs_list = [[self.transFun(group[0]),self.transFun(group[0])] if len(group)==1 
+                      else [self.transFun(group[0]),self.transFun(group[1])] for group in imgs_list]
+        X1,X2 = list(zip(*imgs_list))
+        r = np.random.randint(0,self.HalfBatch)
+        X1,X2 = list(X1),list(X2)
+        X1.extend(X1)
+        X2.extend([X2[(i+r)%self.HalfBatch] for i in range(self.HalfBatch)])
+        return np.array(X1),np.array(X2)
+    
+class PredictGenerator(tf.keras.utils.Sequence):
+    # used for TTA prediction
+    def __init__(self, Ids, transFun, TTASize, color):
+        self.Ids = Ids # a list of lists, like [[w1_img1,w1_img2...],[w2_img1,w2_img2...],...]
+        self.transFun = transFun
+        self.TTASize = TTASize
+        self.color = color
+        
+    def __len__(self):
+        'Denotes the number of batches per epoch.'
+        return len(self.Ids)
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        indexes = self.__create2(self.Ids[index])
+        X = self.__data_generation_color(indexes) if self.color else self.__data_generation(indexes)
+        return X
+
+    def __create2(self,img_list):
+        len_ = len(img_list)
+        np.random.shuffle(img_list)
+        if len_ <= self.TTASize:
+            return img_list
+        else:
+            return img_list[:self.TTASize]
+        
+    def __data_generation(self, indexes):
+        imgs_list = [np.load(img) for img in indexes]
+        size_ = len(indexes)
+        imgs_list = [self.transFun(img_)[:,:,np.newaxis] if j >= size_ else img_[:,:,np.newaxis]
+                     for j,img_ in enumerate(imgs_list * (self.TTASize//size_) + imgs_list[:self.TTASize%size_])]
+        return np.array(imgs_list)
+    
+    def __data_generation_color(self, indexes):
+        imgs_list = [np.load(img) for img in indexes]
+        size_ = len(indexes)
+        imgs_list = [self.transFun(img_) if j >= size_ else img_
+                     for j,img_ in enumerate(imgs_list * (self.TTASize//size_) + imgs_list[:self.TTASize%size_])]
+        return np.array(imgs_list)
     
 ''' build model '''    
-conv_base = Xception_greyscale((256,256,1),'max',False)
-feature_model = models.Sequential()
-feature_model.add(conv_base)
-#feature_model.add(layers.Dense(1024,activation=tf.sigmoid))
-feature_model.add(layers.Dense(1024))
+def l2_distance(feature1,feature2):
+    return tf.reduce_mean(tf.squared_difference(feature1,feature2),axis=1,keepdims=True)
 
-img1 = layers.Input(shape=(256,256,1))
-img2 = layers.Input(shape=(256,256,1))
-feature1 = feature_model(img1)
-feature2 = feature_model(img2)
+def sigmoid_dot_distance(feature1,feature2):
+    return -1*tf.sigmoid(tf.reduce_mean(feature1*feature2,axis=1,keepdims=True))
 
-#output = layers.Lambda(lambda features: tf.reduce_mean(features[0]*features[1],axis=1,keepdims=True))([feature1,feature2])
-output = layers.Lambda(lambda features: tf.sigmoid(tf.reduce_mean(features[0]*features[1],axis=1,keepdims=True)))([feature1,feature2])
-model = models.Model([img1,img2],output)
+def dot_distance(feature1,feature2):
+    return -1*tf.reduce_mean(feature1*feature2,axis=1,keepdims=True)
 
-def loss_fun_factory(margin_p=0.95,margin_n=0.1):
+def dot_distance_neg(feature1,feature2):
+    return tf.reduce_mean(feature1*feature2,axis=1,keepdims=True)
+
+def dot_sigmoid_distance(feature1,feature2):
+    return -1*tf.reduce_mean(tf.sigmoid(feature1)*tf.sigmoid(feature2),axis=1,keepdims=True)
+
+
+def margin_loss_fun_factory(margin_p,margin_n):
     # margin_p for positive, margin_n for negative examples
     def loss(y_true,y_pred):
-        return -1 * y_true * tf.minimum(y_pred,margin_p) + (1-y_true) * tf.maximum(y_pred,margin_n)
+        return y_true * tf.maximum(y_pred,margin_p) - (1-y_true) * tf.minimum(y_pred,margin_n)
     return loss
 
-loss_ = loss_fun_factory()
-model.compile(loss=loss_,
-optimizer=optimizers.Adam(lr=1e-3),
-metrics=[loss_])
+def exp_loss(y_true,y_pred):
+    return tf.exp(y_true*y_pred-(1-y_true)*y_pred)
 
+def cross_entropy_loss(y_true,y_pred):
+    return tf.nn.sigmoid_cross_entropy_with_logits(labels=y_true,logits=y_pred)
 
+def create_model(lr,distanceFun,lossFun,conv_base,IsColor,nodes=[512],activations=[None]):
+    ''' distanceFun takes feature1,feature2 as inputs and returns their 'distance'
+        conv_base is something like Xception_greyscale((256,256,1),'max',False)
+        IsColor then 3 channels else 1
+    '''
+    feature_model = models.Sequential()
+    feature_model.add(conv_base)
+    for i,act in zip(nodes,activations):
+        feature_model.add(layers.Dense(i,activation=act))
 
-''' set up generators '''
+    img1 = layers.Input(shape=(256,256,3 if IsColor else 1))
+    img2 = layers.Input(shape=(256,256,3 if IsColor else 1))
+    feature1 = feature_model(img1)
+    feature2 = feature_model(img2)
 
-import pickle
-from albumentations import ShiftScaleRotate,Cutout,RandomContrast,RandomBrightness,Compose
-from utility.albumentations_helper import create_transform
-import time
-
-with open('/home/will/Desktop/kaggle/Whale/train_df.pkl', 'rb') as f:
-    Ids_train = pickle.load(f)
-with open('/home/will/Desktop/kaggle/Whale/new_whale_train.pkl', 'rb') as f:
-    newWhale_train = pickle.load(f)
-with open('/home/will/Desktop/kaggle/Whale/val_df.pkl', 'rb') as f:
-    Ids_val = pickle.load(f)
-with open('/home/will/Desktop/kaggle/Whale/new_whale_val.pkl', 'rb') as f:
-    newWhale_val = pickle.load(f)
-
-aug = Compose([RandomContrast(p=0.2),RandomBrightness(p=0.2),
-                ShiftScaleRotate(shift_limit=0.03,rotate_limit=15,scale_limit=0.02,p=1),Cutout(p=0.5)])
-transform = create_transform(aug)    
-
-gen_train = DataGenerator(Ids_train,newWhale_train,transform)
-gen_val = DataGenerator(Ids_val,newWhale_val,transform)
-
-
-''' train model '''
+    output = layers.Lambda(lambda features: distanceFun(features[0],features[1]))([feature1,feature2])
+    train_model = models.Model([img1,img2],output)
+    feature_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr)) # needed to run predict_gen
+    train_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr))
+    return train_model,feature_model
 
 
 '''reset weights
 from tensorflow.keras.initializers import glorot_uniform
-from tensorflow.keras import backend as K
 session = K.get_session()
 dense_layer = model.layers[2].layers[1]
 dense_layer.set_weights([glorot_uniform()(dense_layer.get_weights()[0].shape).eval(session=session),
                          np.zeros_like(dense_layer.get_weights()[1],dtype=np.float32)])
-#K.clear_session()
+
+from tensorflow.keras import backend as K
+K.clear_session()
+tf.reset_default_graph()
+import gc
+gc.collect()
 '''
+def generate_feature(Ids,transform,FFA_size,color,feature_model):
+    feature_gen = PredictGenerator(Ids.Imgs.tolist(),transform,FFA_size,color)
+    feature = feature_model.predict_generator(feature_gen,workers=2,use_multiprocessing=True)
+    return np.reshape(feature,(feature.shape[0]//FFA_size,FFA_size,feature.shape[1]))
 
-start = time.time()
-history = model.fit_generator(
-          gen_train,
-          validation_data = gen_val,
-          epochs=5,
-          use_multiprocessing=True,workers=3,max_queue_size=20)
-end = time.time()
-print('time:{}'.format(end - start))
+def l2_distance_np(feature1,feature2):
+    return np.mean((feature1-feature2)**2,3)
 
+def top_k(d,k=5,returnValue=False):
+    top = np.argpartition(d,k)[0:k]
+    index = np.argsort(d[top])
+    if returnValue:
+        return top[index].tolist(),d[top[index]].tolist()
+    else:
+        return top[index].tolist()
+
+def loop_distance(feature_train,feature_val,distanceFun,returnValue=False):
+    feature_train = feature_train[:,:,np.newaxis,:]
+    index_list = []
+    if returnValue:
+        value_list = []
+
+    for feature in feature_val:
+        feature = feature[np.newaxis,np.newaxis,:,:]
+        d = np.mean(distanceFun(feature_train,feature),(1,2))
+        if returnValue:
+            index,value = top_k(d,k=5,returnValue=returnValue)
+            index_list.append(index)
+            value_list.append(value)
+        else:
+            index = top_k(d,k=5,returnValue=returnValue)
+            index_list.append(index)
+
+    if returnValue:
+        return np.array(index_list),np.array(value_list)
+    else:
+        return np.array(index_list)
+
+def MAP(labels,predicts):
+    # labels are 1-d array, predicts are 2-d array (number_of_imgs,k_guesses)
+    # does not work if predicts have repeats in row
+    _,temp = np.where(predicts == labels[:,np.newaxis])
+    return np.sum(1/(temp + 1))/labels.shape[0]
 
