@@ -121,7 +121,7 @@ class PredictGenerator(tf.keras.utils.Sequence):
                      for j,img_ in enumerate(imgs_list * (self.TTASize//size_) + imgs_list[:self.TTASize%size_])]
         return np.array(imgs_list)
     
-''' build model '''    
+''' tfs '''    
 def l2_distance(feature1,feature2):
     return tf.reduce_mean(tf.squared_difference(feature1,feature2),axis=1,keepdims=True)
 
@@ -167,10 +167,95 @@ def create_model(lr,distanceFun,lossFun,conv_base,IsColor,nodes=[512],activation
 
     output = layers.Lambda(lambda features: distanceFun(features[0],features[1]))([feature1,feature2])
     train_model = models.Model([img1,img2],output)
-    feature_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr)) # needed to run predict_gen
+    feature_model.compile(loss='mse',optimizer='sgd') # needed to run predict_gen
     train_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr))
     return train_model,feature_model
 
+def Xception_reduced(input_shape):
+    input_ = layers.Input(shape=input_shape)
+
+    x = layers.Conv2D(32, (3, 3),
+                      strides=(2, 2),
+                      use_bias=False,
+                      name='block1_conv1')(input_)
+    x = layers.BatchNormalization(name='block1_conv1_bn')(x)
+    x = layers.Activation('relu', name='block1_conv1_act')(x)
+    x = layers.Conv2D(64, (3, 3), use_bias=False, name='block1_conv2')(x)
+    x = layers.BatchNormalization(name='block1_conv2_bn')(x)
+    x = layers.Activation('relu', name='block1_conv2_act')(x)
+
+    residual = layers.Conv2D(128, (1, 1),
+                             strides=(2, 2),
+                             padding='same',
+                             use_bias=False)(x)
+    residual = layers.BatchNormalization()(residual)
+
+    x = layers.SeparableConv2D(128, (3, 3),
+                               padding='same',
+                               use_bias=False,
+                               name='block2_sepconv1')(x)
+    x = layers.BatchNormalization(name='block2_sepconv1_bn')(x)
+    x = layers.Activation('relu', name='block2_sepconv2_act')(x)
+    x = layers.SeparableConv2D(128, (3, 3),
+                               padding='same',
+                               use_bias=False,
+                               name='block2_sepconv2')(x)
+    x = layers.BatchNormalization(name='block2_sepconv2_bn')(x)
+
+    x = layers.MaxPooling2D((3, 3),
+                            strides=(2, 2),
+                            padding='same',
+                            name='block2_pool')(x)
+    x = layers.add([x, residual])
+
+    residual = layers.Conv2D(256, (1, 1), strides=(2, 2),
+                             padding='same', use_bias=False)(x)
+    residual = layers.BatchNormalization()(residual)
+
+    x = layers.Activation('relu', name='block3_sepconv1_act')(x)
+    x = layers.SeparableConv2D(256, (3, 3),
+                               padding='same',
+                               use_bias=False,
+                               name='block3_sepconv1')(x)
+    x = layers.BatchNormalization(name='block3_sepconv1_bn')(x)
+    x = layers.Activation('relu', name='block3_sepconv2_act')(x)
+    x = layers.SeparableConv2D(256, (3, 3),
+                               padding='same',
+                               use_bias=False,
+                               name='block3_sepconv2')(x)
+    x = layers.BatchNormalization(name='block3_sepconv2_bn')(x)
+
+    x = layers.MaxPooling2D((3, 3), strides=(2, 2),
+                            padding='same',
+                            name='block3_pool')(x)
+    x = layers.add([x, residual])
+
+    residual = layers.Conv2D(728, (1, 1),
+                             strides=(2, 2),
+                             padding='same',
+                             use_bias=False)(x)
+    residual = layers.BatchNormalization()(residual)
+
+    x = layers.Activation('relu', name='block4_sepconv1_act')(x)
+    x = layers.SeparableConv2D(728, (3, 3),
+                               padding='same',
+                               use_bias=False,
+                               name='block4_sepconv1')(x)
+    x = layers.BatchNormalization(name='block4_sepconv1_bn')(x)
+    x = layers.Activation('relu', name='block4_sepconv2_act')(x)
+    x = layers.SeparableConv2D(728, (3, 3),
+                               padding='same',
+                               use_bias=False,
+                               name='block4_sepconv2')(x)
+    x = layers.BatchNormalization(name='block4_sepconv2_bn')(x)
+
+    x = layers.MaxPooling2D((3, 3), strides=(2, 2),
+                            padding='same',
+                            name='block4_pool')(x)
+    x = layers.add([x, residual])
+    x = layers.GlobalMaxPooling2D()(x)
+    model = models.Model(input_, x, name='xception')
+    return model
 
 '''reset weights
 from tensorflow.keras.initializers import glorot_uniform
@@ -179,12 +264,9 @@ dense_layer = model.layers[2].layers[1]
 dense_layer.set_weights([glorot_uniform()(dense_layer.get_weights()[0].shape).eval(session=session),
                          np.zeros_like(dense_layer.get_weights()[1],dtype=np.float32)])
 
-from tensorflow.keras import backend as K
-K.clear_session()
-tf.reset_default_graph()
-import gc
-gc.collect()
 '''
+
+''' predictions '''  
 def generate_feature(Ids,transform,FFA_size,color,feature_model):
     feature_gen = PredictGenerator(Ids.Imgs.tolist(),transform,FFA_size,color)
     feature = feature_model.predict_generator(feature_gen,workers=2,use_multiprocessing=True)
