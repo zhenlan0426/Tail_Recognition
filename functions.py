@@ -35,7 +35,7 @@ class DataGenerator(tf.keras.utils.Sequence):
 
     def __len__(self):
         'Denotes the number of batches per epoch. subtract one as one example from newWhale'
-        return int(self.Ids.shape[0] / (self.HalfBatch-1))
+        return int(self.Ids.shape[0] / (self.HalfBatch-1)) - 1
 
     def __getitem__(self, index):
         'Generate one batch of data'
@@ -64,7 +64,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         imgs_list = [[self.transFun(group[0])[:,:,np.newaxis],self.transFun(group[0])[:,:,np.newaxis]] if len(group)==1 
                       else [self.transFun(group[0])[:,:,np.newaxis],self.transFun(group[1])[:,:,np.newaxis]] for group in imgs_list]
         X1,X2 = list(zip(*imgs_list))
-        r = np.random.randint(0,self.HalfBatch)
+        r = np.random.randint(1,self.HalfBatch)
         X1,X2 = list(X1),list(X2)
         X1.extend(X1)
         X2.extend([X2[(i+r)%self.HalfBatch] for i in range(self.HalfBatch)])
@@ -75,7 +75,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         imgs_list = [[self.transFun(group[0]),self.transFun(group[0])] if len(group)==1 
                       else [self.transFun(group[0]),self.transFun(group[1])] for group in imgs_list]
         X1,X2 = list(zip(*imgs_list))
-        r = np.random.randint(0,self.HalfBatch)
+        r = np.random.randint(1,self.HalfBatch)
         X1,X2 = list(X1),list(X2)
         X1.extend(X1)
         X2.extend([X2[(i+r)%self.HalfBatch] for i in range(self.HalfBatch)])
@@ -160,8 +160,8 @@ def create_model(lr,distanceFun,lossFun,conv_base,IsColor,nodes=[512],activation
     for i,act in zip(nodes,activations):
         feature_model.add(layers.Dense(i,activation=act))
 
-    img1 = layers.Input(shape=(256,256,3 if IsColor else 1))
-    img2 = layers.Input(shape=(256,256,3 if IsColor else 1))
+    img1 = layers.Input(shape=(224,224,3 if IsColor else 1))
+    img2 = layers.Input(shape=(224,224,3 if IsColor else 1))
     feature1 = feature_model(img1)
     feature2 = feature_model(img2)
 
@@ -283,7 +283,8 @@ def top_k(d,k=5,returnValue=False):
     else:
         return top[index].tolist()
 
-def loop_distance(feature_train,feature_val,distanceFun,returnValue=False):
+def loop_distance(feature_train,feature_val,distanceFun,aggFun,returnValue=False,k=5):
+	# aggFun is an aggregating function like partial(np.quantile,q=0.5,axis=(1,2))
     feature_train = feature_train[:,:,np.newaxis,:]
     index_list = []
     if returnValue:
@@ -291,13 +292,13 @@ def loop_distance(feature_train,feature_val,distanceFun,returnValue=False):
 
     for feature in feature_val:
         feature = feature[np.newaxis,np.newaxis,:,:]
-        d = np.mean(distanceFun(feature_train,feature),(1,2))
+        d = aggFun(distanceFun(feature_train,feature))
         if returnValue:
-            index,value = top_k(d,k=5,returnValue=returnValue)
+            index,value = top_k(d,k=k,returnValue=returnValue)
             index_list.append(index)
             value_list.append(value)
         else:
-            index = top_k(d,k=5,returnValue=returnValue)
+            index = top_k(d,k=k,returnValue=returnValue)
             index_list.append(index)
 
     if returnValue:
