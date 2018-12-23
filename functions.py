@@ -268,7 +268,7 @@ dense_layer.set_weights([glorot_uniform()(dense_layer.get_weights()[0].shape).ev
 
 ''' predictions '''  
 def generate_feature(Ids,transform,FFA_size,color,feature_model):
-    feature_gen = PredictGenerator(Ids.Imgs.tolist(),transform,FFA_size,color)
+    feature_gen = PredictGenerator(Ids if isinstance(Ids,list) else Ids.Imgs.tolist(),transform,FFA_size,color)
     feature = feature_model.predict_generator(feature_gen,workers=2,use_multiprocessing=True)
     return np.reshape(feature,(feature.shape[0]//FFA_size,FFA_size,feature.shape[1]))
 
