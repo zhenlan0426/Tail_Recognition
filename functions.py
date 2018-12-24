@@ -266,6 +266,7 @@ dense_layer.set_weights([glorot_uniform()(dense_layer.get_weights()[0].shape).ev
 
 '''
 
+
 ''' predictions '''  
 def generate_feature(Ids,transform,FFA_size,color,feature_model):
     feature_gen = PredictGenerator(Ids if isinstance(Ids,list) else Ids.Imgs.tolist(),transform,FFA_size,color)
@@ -274,6 +275,9 @@ def generate_feature(Ids,transform,FFA_size,color,feature_model):
 
 def l2_distance_np(feature1,feature2):
     return np.mean((feature1-feature2)**2,3)
+
+def dot_distance_neg_np(feature1,feature2):
+    return -np.mean(feature1*feature2,axis=3)
 
 def top_k(d,k=5,returnValue=False):
     top = np.argpartition(d,k)[0:k]
