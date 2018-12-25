@@ -9,7 +9,8 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras import models,layers
 from tensorflow.keras import optimizers
-
+from tensorflow.keras.callbacks import Callback
+from tensorflow.python.keras import backend as K
 
 '''
 # test augmentation
@@ -19,6 +20,82 @@ for i in range(10):
         img = np.load(img)
         aug_compare(img, transform,cmap='gray')
 '''
+
+class FineTune(Callback):
+  """Reduce learning rate and set more layers trainable to True when a metric has stopped improving.
+
+  ```
+  Arguments:
+      monitor: quantity to be monitored.
+      factor: factor by which the learning rate will
+          be reduced. new_lr = lr * factor
+      patience: number of epochs with no improvement
+          after which learning rate will be reduced.
+      verbose: int. 0: quiet, 1: update messages.
+      fine_tune_layerName: list of layer name to be turn on one after another
+      e.g. ['conv5','conv4','conv3']
+      save_model is path to save models to. should be a list of two for train_model and feature_model
+  """
+
+  def __init__(self,
+               fine_tune_layerName,
+               lossFun,
+               optimizer,
+               monitor='val_loss',
+               save_model=None,
+               save_model_after=10,
+               factor=0.25,
+               patience=5,
+               verbose=1):
+    super(FineTune, self).__init__()
+
+    self.monitor = monitor
+    self.factor = factor
+    self.patience = patience
+    self.verbose = verbose
+    self.wait = 0
+    self.best = np.Inf
+    self.save_model = save_model
+    self.save_model_after = save_model_after
+    self.fine_tune_layerName = fine_tune_layerName
+    self.fine_tune_layer = 0
+    self.lossFun = lossFun
+    self.optimizer = optimizer
+
+  def on_epoch_end(self, epoch, logs=None):
+      # turns on part of the network and reduce lr
+      logs = logs or {}
+      logs['lr'] = K.get_value(self.model.optimizer.lr)
+      current = logs[self.monitor]
+      if current < self.best:
+          self.best = current
+          self.wait = 0
+          if (self.save_model is not None) and epoch > self.save_model_after:
+              self.model.save(self.save_model[0])
+              self.model.layers[2].layers[0].save(self.save_model[1])
+
+      else:
+          self.wait += 1
+          if self.wait >= self.patience:
+              if self.fine_tune_layer >= len(self.fine_tune_layerName):
+                  print('stoped training at epoch:{}'.format(epoch))
+                  self.model.stop_training = True
+              else:   
+                  if self.verbose > 0:
+                      print('reduce lr at epoch:{}'.format(epoch))
+                      
+                  ## custom fine-tune ##
+                  self.model.layers[2].layers[0].trainable=True
+                  train = False
+                  for layer in self.model.layers[2].layers[0].layers:
+                      if self.fine_tune_layerName[self.fine_tune_layer] in layer.name:
+                          train = True
+                      layer.trainable = train
+                  self.model.compile(loss=self.lossFun,optimizer=self.optimizer(lr=logs['lr']*self.factor))
+                  ## custom fine-tune ##
+                  
+                  self.wait = 0
+                  self.fine_tune_layer += 1
 
 class DataGenerator(tf.keras.utils.Sequence):
 
