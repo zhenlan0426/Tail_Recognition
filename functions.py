@@ -248,6 +248,27 @@ def create_model(lr,distanceFun,lossFun,conv_base,IsColor,nodes=[512],activation
     train_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr))
     return train_model,feature_model
 
+def create_model2(lr,lossFun,conv_base,IsColor):
+
+    img1 = layers.Input(shape=(224,224,3 if IsColor else 1))
+    img2 = layers.Input(shape=(224,224,3 if IsColor else 1))
+    feature1 = conv_base(img1)
+    feature2 = conv_base(img2)
+    
+    x1 = layers.Lambda(lambda x : x[0]*x[1])([feature1, feature2])
+    x2 = layers.Lambda(lambda x : tf.abs(x[0] - x[1]))([feature1, feature2])
+    x3 = layers.Lambda(lambda x : tf.square(x[0] - x[1]))([feature1, feature2])
+    x4 = layers.Lambda(lambda x : x[0] + x[1])([feature1, feature2])
+    x = layers.Concatenate()([x1, x2, x3, x4])
+    x = layers.Reshape((4, 1, conv_base.output_shape[1]), name='reshape1')(x)
+    output = layers.DepthwiseConv2D(kernel_size=(4,1),use_bias=False)(x)
+    output = layers.Lambda(lambda x:tf.squeeze(tf.reduce_mean(x,3,keepdims=True),(1,2)))(output)
+
+    train_model = models.Model([img1,img2],output)
+    conv_base.compile(loss='mse',optimizer='sgd') # needed to run predict_gen
+    train_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr))
+    return train_model,conv_base
+
 def Xception_reduced(input_shape):
     input_ = layers.Input(shape=input_shape)
 
