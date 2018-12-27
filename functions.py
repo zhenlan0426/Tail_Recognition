@@ -377,6 +377,12 @@ def l2_distance_np(feature1,feature2):
 def dot_distance_neg_np(feature1,feature2):
     return -np.mean(feature1*feature2,axis=3)
 
+def depthwise_maker(conv_weight):
+    def depthwise_distance(f1,f2):
+        f_stack = np.stack([f1*f2,np.abs(f1-f2),(f1-f2)**2,f1+f2],1)
+        return np.sum(f_stack * conv_weight[np.newaxis,:,:],(1,2))/f1.shape[1]
+    return depthwise_distance
+    
 def top_k(d,k=5,returnValue=False):
     top = np.argpartition(d,k)[0:k]
     index = np.argsort(d[top])
