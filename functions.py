@@ -420,3 +420,27 @@ def MAP(labels,predicts):
     _,temp = np.where(predicts == labels[:,np.newaxis])
     return np.sum(1/(temp + 1))/labels.shape[0]
 
+def GridSearch(aggFuns,FFA1_sizes,FFA2_sizes,Ids_train,Ids_val,transform,color,feature_model,distance,k=5):
+    # aggFuns is a list of aggregation functions
+    # FFA1_sizes is a list of integer for train feature, FFA2 for val feature. They needs to be of same length
+    # e.g. FFA1_sizes = [4,4], FFA2_sizes = [4,8]
+    mapping_dict = dict(zip(Ids_train.Id.values,Ids_train.index.values))
+    labels = Ids_val.Id.map(mapping_dict)
+        
+    FFA1_size = max(FFA1_sizes)
+    FFA2_size = max(FFA2_sizes)
+    feature_train = generate_feature(Ids_train,transform,FFA1_size,color,feature_model)[:,:,np.newaxis,:]
+    feature_val = generate_feature(Ids_val,transform,FFA2_size,color,feature_model)
+    index_dict = {key_:[] for key_ in product(zip(FFA1_sizes,FFA2_sizes),
+                                              [agg.keywords.get('q') for agg in aggFuns])}
+    
+    for feature in feature_val:
+        feature = feature[np.newaxis,np.newaxis,:,:]
+        d = distance(feature_train,feature)
+        for i,j in zip(FFA1_sizes,FFA2_sizes):
+            for agg in aggFuns:
+                d1 = agg(d[:,:i,:j])
+                index = top_k(d1,k=k,returnValue=False)
+                index_dict[((i,j),agg.keywords.get('q'))].append(index)
+    
+    return {key: MAP(labels,np.array(value)) for key, value in index_dict.items()}
