@@ -11,6 +11,7 @@ from tensorflow.keras import models,layers
 from tensorflow.keras import optimizers
 from tensorflow.keras.callbacks import Callback
 from tensorflow.python.keras import backend as K
+from itertools import product
 
 '''
 # test augmentation
@@ -197,32 +198,8 @@ class PredictGenerator(tf.keras.utils.Sequence):
         imgs_list = [self.transFun(img_) if j >= size_ else img_
                      for j,img_ in enumerate(imgs_list * (self.TTASize//size_) + imgs_list[:self.TTASize%size_])]
         return np.array(imgs_list)
-
-class FeaturesGenerator(tf.keras.utils.Sequence):
-    # self.N1 needs to be divisible by batchSize!!!
-    def __init__(self, feature1,feature2,batchSize):
-        # feature1 are numpy array of shape (N,d)
-        self.feature1 = feature1 
-        self.feature2 = feature2
-        self.batchSize = batchSize
-        self.N1 = self.feature1.shape[0]
-        self.N2 = self.feature2.shape[0]
-        self.N = self.N1 * self.N2
-        self.len_ = self.N1//self.batchSize
-        self.d = self.feature1.shape[1]
-        
-    def __len__(self):
-        'Denotes the number of batches per epoch.'
-        return self.N//self.batchSize
-
-    def __getitem__(self, index):
-        'Generate one batch of data'
-        i = index%self.len_
-        j = index//self.len_
-        X1 = self.feature1[i*self.batchSize:(i+1)*self.batchSize]
-        X2 = np.broadcast_to(self.feature2[j],(self.batchSize,self.d))
-        return (X1,X2)
-
+    
+    
 ''' tfs '''    
 def l2_distance(feature1,feature2):
     return tf.reduce_mean(tf.squared_difference(feature1,feature2),axis=1,keepdims=True)
@@ -293,29 +270,6 @@ def create_model2(lr,lossFun,conv_base,IsColor):
     conv_base.compile(loss='mse',optimizer='sgd') # needed to run predict_gen
     train_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr))
     return train_model,conv_base
-
-def create_model_(lr,lossFun,conv_base,IsColor):
-    feature1 = layers.Input(shape=conv_base.output_shape[1:])
-    feature2 = layers.Input(shape=conv_base.output_shape[1:])
-    x1 = layers.Lambda(lambda x : x[0]*x[1])([feature1, feature2])
-    x2 = layers.Lambda(lambda x : tf.abs(x[0] - x[1]))([feature1, feature2])
-    x3 = layers.Lambda(lambda x : tf.square(x[0] - x[1]))([feature1, feature2])
-    x4 = layers.Lambda(lambda x : x[0] + x[1])([feature1, feature2])
-    x = layers.Concatenate()([x1, x2, x3, x4])
-    x = layers.Reshape((4, 1, conv_base.output_shape[1]), name='reshape1')(x)
-    output = layers.DepthwiseConv2D(kernel_size=(4,1),use_bias=False)(x)
-    output = layers.Lambda(lambda x:tf.squeeze(tf.reduce_mean(x,3,keepdims=True),(1,2)))(output)
-    head_model = models.Model([feature1,feature2],output)
-    
-    img1 = layers.Input(shape=(224,224,3 if IsColor else 1))
-    img2 = layers.Input(shape=(224,224,3 if IsColor else 1))
-    y = head_model([conv_base(img1),conv_base(img2)])
-    train_model = models.Model([img1,img2],y)
-    
-    conv_base.compile(loss='mse',optimizer='sgd') # needed to run predict_gen
-    head_model.compile(loss='mse',optimizer='sgd') # needed to run predict_gen    
-    train_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr))
-    return train_model,conv_base,head_model
 
 def Xception_reduced(input_shape):
     input_ = layers.Input(shape=input_shape)
@@ -425,12 +379,12 @@ def l2_distance_np(feature1,feature2):
 def dot_distance_neg_np(feature1,feature2):
     return -np.mean(feature1*feature2,axis=3)
 
-def depthwise_maker(conv_weight):
+def depthwise_maker(conv_weight,stackAxis=3,sumAxis=(3,4)):
     def depthwise_distance(f1,f2):
-        f_stack = np.stack([f1*f2,np.abs(f1-f2),(f1-f2)**2,f1+f2],1)
-        return np.sum(f_stack * conv_weight[np.newaxis,:,:],(1,2))/f1.shape[1]
+        f_stack = np.stack([f1*f2,np.abs(f1-f2),(f1-f2)**2,f1+f2],stackAxis)
+        return np.sum(f_stack * conv_weight,sumAxis)/conv_weight.shape[1]
     return depthwise_distance
-    
+
 def top_k(d,k=5,returnValue=False):
     top = np.argpartition(d,k)[0:k]
     index = np.argsort(d[top])
