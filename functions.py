@@ -99,7 +99,6 @@ class FineTune(Callback):
                   self.fine_tune_layer += 1
 
 class DataGenerator(tf.keras.utils.Sequence):
-
     def __init__(self, Ids, newWhale, transFun, color, shuffle=True,HalfBatch=16):
         self.Ids = Ids # df with first column being w ID, second being list of imgs for each w
         self.newWhale = newWhale # a list of img for new whale
@@ -158,6 +157,49 @@ class DataGenerator(tf.keras.utils.Sequence):
         X1.extend(X1)
         X2.extend([X2[(i+r)%self.HalfBatch] for i in range(self.HalfBatch)])
         return np.array(X1),np.array(X2)
+
+class TripletGenerator(tf.keras.utils.Sequence):
+    def __init__(self, Ids, newWhale, transFun, shuffle=True,HalfBatch=8):
+        self.Ids = Ids # df with first column being w ID, second being list of imgs for each w
+        self.newWhale = newWhale # a list of img for new whale
+        self.transFun = transFun
+        self.shuffle = shuffle
+        self.HalfBatch = HalfBatch
+        self.on_epoch_begin()
+
+    def __len__(self):
+        'Denotes the number of batches per epoch. subtract one as one example from newWhale'
+        return int(self.Ids.shape[0] / (self.HalfBatch-1)) - 1
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        indexes = self.Ids.iloc[index*(self.HalfBatch-1):(index+1)*(self.HalfBatch-1)]['Imgs'].tolist()
+        indexes.append([self.newWhale[index]])
+        X1,X2 = self.__data_generation([self.__create2(i) for i in indexes])
+        return [X1,X2],None
+
+    def on_epoch_begin(self):
+        if self.shuffle == True:
+            self.Ids = self.Ids.sample(frac=1).reset_index(drop=True)
+            np.random.shuffle(self.newWhale)
+            
+    @staticmethod
+    def __create2(img_list):
+        len_ = len(img_list)
+        if len_ <= 2:
+            return img_list
+        else:
+            np.random.shuffle(img_list)
+            return img_list[:2]
+        
+    def __data_generation(self, indexes):
+        imgs_list = [[np.load(img) for img in group] for group in indexes]
+        imgs_list = [[self.transFun(group[0])[:,:,np.newaxis],self.transFun(group[0])[:,:,np.newaxis]] if len(group)==1 
+                      else [self.transFun(group[0])[:,:,np.newaxis],self.transFun(group[1])[:,:,np.newaxis]] for group in imgs_list]
+        X1,X2 = list(zip(*imgs_list))
+        X1,X2 = list(X1),list(X2)
+        return np.array(X1),np.array(X2)
+    
     
 class PredictGenerator(tf.keras.utils.Sequence):
     # used for TTA prediction
@@ -315,6 +357,32 @@ def create_model2(lr,lossFun,conv_base,IsColor):
     conv_base.compile(loss='mse',optimizer='sgd') # needed to run predict_gen
     train_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr))
     return train_model,conv_base
+
+def create_model_triplet(lr,distanceFun,conv_base,IsColor,margin,HalfBatch=8,nodes=[512],activations=[None]):
+    # margin needs to be negative
+    feature_model = models.Sequential()
+    feature_model.add(conv_base)
+    for i,act in zip(nodes,activations):
+        feature_model.add(layers.Dense(i,activation=act))
+
+    img_anchor = layers.Input(shape=(224,224,3 if IsColor else 1))
+    img_pos = layers.Input(shape=(224,224,3 if IsColor else 1))
+    
+    feature_anchor = feature_model(img_anchor)
+    feature_pos = feature_model(img_pos)
+    r=tf.random_uniform(dtype=tf.int32, minval=1, maxval=HalfBatch, shape=(1,))
+    indx = tf.mod(tf.range(0,HalfBatch)+r,HalfBatch)
+    feature_neg = tf.gather(feature_pos,indx)
+
+    d_pos = distanceFun(feature_anchor,feature_pos)
+    d_neg = distanceFun(feature_anchor,feature_neg)
+    triplet_loss = tf.maximum(d_pos-d_neg,margin)
+    
+    train_model = models.Model([img_anchor,img_pos],feature_anchor)
+    train_model.add_loss(tf.reduce_mean(triplet_loss))
+    feature_model.compile(loss='mse',optimizer='sgd') # needed to run predict_gen
+    train_model.compile(loss=None,optimizer=optimizers.Adam(lr=lr))
+    return train_model,feature_model
 
 def Xception_reduced(input_shape):
     input_ = layers.Input(shape=input_shape)
