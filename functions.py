@@ -161,11 +161,12 @@ class DataGenerator(tf.keras.utils.Sequence):
     
 class PredictGenerator(tf.keras.utils.Sequence):
     # used for TTA prediction
-    def __init__(self, Ids, transFun, TTASize, color):
+    def __init__(self, Ids, transFun, TTASize, color, keepOrg=True):
         self.Ids = Ids # a list of lists, like [[w1_img1,w1_img2...],[w2_img1,w2_img2...],...]
         self.transFun = transFun
         self.TTASize = TTASize
         self.color = color
+        self.keepOrg = keepOrg
         
     def __len__(self):
         'Denotes the number of batches per epoch.'
@@ -188,7 +189,7 @@ class PredictGenerator(tf.keras.utils.Sequence):
     def __data_generation(self, indexes):
         imgs_list = [np.load(img) for img in indexes]
         size_ = len(indexes)
-        imgs_list = [self.transFun(img_)[:,:,np.newaxis] if j >= size_ else img_[:,:,np.newaxis]
+        imgs_list = [img_[:,:,np.newaxis] if ((j < size_) and self.keepOrg) else self.transFun(img_)[:,:,np.newaxis]
                      for j,img_ in enumerate(imgs_list * (self.TTASize//size_) + imgs_list[:self.TTASize%size_])]
         return np.array(imgs_list)
     
@@ -198,6 +199,50 @@ class PredictGenerator(tf.keras.utils.Sequence):
         imgs_list = [self.transFun(img_) if j >= size_ else img_
                      for j,img_ in enumerate(imgs_list * (self.TTASize//size_) + imgs_list[:self.TTASize%size_])]
         return np.array(imgs_list)
+    
+class AdvGenerator(tf.keras.utils.Sequence):
+    def __init__(self, Ids, transFun, shuffle=True,HalfBatch=16):
+        # Ids is DF with first column being w ID, second being list of imgs for each w, 
+        # and one column being the adversarial list of imgs
+        self.Ids = Ids 
+        self.transFun = transFun
+        self.shuffle = shuffle
+        self.HalfBatch = HalfBatch
+        self.y = np.ones(HalfBatch*2,dtype=np.float32) 
+        self.y[HalfBatch:] = 0 # 16 positive, 16 negative examples
+        self.on_epoch_end()
+
+    def __len__(self):
+        'Denotes the number of batches per epoch. subtract one as one example from newWhale'
+        return int(self.Ids.shape[0] / self.HalfBatch) - 1
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        index_base = self.Ids.iloc[index*self.HalfBatch:(index+1)*self.HalfBatch]['Imgs'].tolist()
+        index_adv  = self.Ids.iloc[index*self.HalfBatch:(index+1)*self.HalfBatch]['Advs'].tolist()
+        
+        X1,X2 = self.__data_generation([self.__create(i,2) for i in index_base],[self.__create(j,1)[0] for j in index_adv])
+        return [X1,X2], self.y
+
+    def on_epoch_end(self):
+        if self.shuffle == True:
+            self.Ids = self.Ids.sample(frac=1).reset_index(drop=True)
+            
+    @staticmethod
+    def __create(img_list,i):
+        np.random.shuffle(img_list)        
+        return img_list[:i]
+        
+    def __data_generation(self, index_base,index_adv):
+        # index_base is list of list of two, index_adv is a list
+        imgs_list = [[np.load(img) for img in group] for group in index_base]
+        imgs_list = [[self.transFun(group[0])[:,:,np.newaxis],self.transFun(group[0])[:,:,np.newaxis]] if len(group)==1 
+                      else [self.transFun(group[0])[:,:,np.newaxis],self.transFun(group[1])[:,:,np.newaxis]] for group in imgs_list]
+        X1,X2 = list(zip(*imgs_list))
+        X1,X2 = list(X1),list(X2)
+        X1.extend(X1)
+        X2.extend([self.transFun(np.load(img))[:,:,np.newaxis] for img in index_adv])
+        return np.array(X1),np.array(X2)
     
     
 ''' tfs '''    
@@ -422,13 +467,15 @@ def MAP(labels,predicts):
     _,temp = np.where(predicts == labels[:,np.newaxis])
     return np.sum(1/(temp + 1))/labels.shape[0]
 
-def GridSearch(aggFuns,FFA1_sizes,FFA2_sizes,Ids_train,Ids_val,transform,color,feature_model,distance,k=5):
+def GridSearch(aggFuns,FFA1_sizes,FFA2_sizes,Ids_train,Ids_val,transform,color,feature_model,distance,k=5,selectOne=True):
     # aggFuns is a list of aggregation functions
     # FFA1_sizes is a list of integer for train feature, FFA2 for val feature. They needs to be of same length
     # e.g. FFA1_sizes = [4,4], FFA2_sizes = [4,8]
     mapping_dict = dict(zip(Ids_train.Id.values,Ids_train.index.values))
     labels = Ids_val.Id.map(mapping_dict)
-        
+    if selectOne:
+        # one image per class
+        Ids_val = [[sublist[np.random.randint(len(sublist))]] for sublist in Ids_val.Imgs.tolist()]
     FFA1_size = max(FFA1_sizes)
     FFA2_size = max(FFA2_sizes)
     feature_train = generate_feature(Ids_train,transform,FFA1_size,color,feature_model)[:,:,np.newaxis,:]
@@ -446,3 +493,39 @@ def GridSearch(aggFuns,FFA1_sizes,FFA2_sizes,Ids_train,Ids_val,transform,color,f
                 index_dict[((i,j),agg.keywords.get('q'))].append(index)
     
     return {key: MAP(labels,np.array(value)) for key, value in index_dict.items()}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
