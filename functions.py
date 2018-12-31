@@ -358,11 +358,13 @@ def create_model2(lr,lossFun,conv_base,IsColor):
     train_model.compile(loss=lossFun,optimizer=optimizers.Adam(lr=lr))
     return train_model,conv_base
 
-def create_model_triplet(lr,distanceFun,conv_base,IsColor,margin,HalfBatch=8,nodes=[512],activations=[None]):
+def create_model_triplet(lr,distanceFun,conv_base,IsColor,margin,HalfBatch=8,nodes=[512],activations=[None],BatchNorm=False):
     # margin needs to be negative
     feature_model = models.Sequential()
     feature_model.add(conv_base)
     for i,act in zip(nodes,activations):
+        if BatchNorm:
+            feature_model.add(layers.BatchNormalization())
         feature_model.add(layers.Dense(i,activation=act))
 
     img_anchor = layers.Input(shape=(224,224,3 if IsColor else 1))
@@ -486,8 +488,8 @@ def generate_feature(Ids,transform,FFA_size,color,feature_model):
     feature = feature_model.predict_generator(feature_gen,workers=2,use_multiprocessing=True)
     return np.reshape(feature,(feature.shape[0]//FFA_size,FFA_size,feature.shape[1]))
 
-def l2_distance_np(feature1,feature2):
-    return np.mean((feature1-feature2)**2,3)
+def l2_distance_np(feature1,feature2,axis=3):
+    return np.mean((feature1-feature2)**2,axis)
 
 def dot_distance_neg_np(feature1,feature2):
     return -np.mean(feature1*feature2,axis=3)
