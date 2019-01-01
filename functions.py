@@ -227,7 +227,22 @@ class NewWhaleGenerator(tf.keras.utils.Sequence):
     def on_epoch_begin(self):
         np.random.shuffle(self.Ids)
         np.random.shuffle(self.newWhale)
-            
+        
+class NW_PredictGenerator(tf.keras.utils.Sequence):
+    def __init__(self, Imgs, transFun, batchSize=16):
+        self.Imgs = Imgs # a list of imgs
+        self.transFun = transFun
+        self.batchSize = batchSize
+
+    def __len__(self):
+        'Denotes the number of batches per epoch.'
+        return len(self.Imgs)//self.batchSize + (len(self.Imgs)%self.batchSize>0)
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        X = [self.transFun(np.load(img))[:,:,np.newaxis] for img in self.Imgs[index*self.batchSize:(index+1)*self.batchSize]]
+        return np.array(X)
+        
 class PredictGenerator(tf.keras.utils.Sequence):
     # used for TTA prediction
     def __init__(self, Ids, transFun, TTASize, color, keepOrg=True):
