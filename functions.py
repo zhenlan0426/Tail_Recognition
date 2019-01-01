@@ -200,7 +200,34 @@ class TripletGenerator(tf.keras.utils.Sequence):
         X1,X2 = list(X1),list(X2)
         return np.array(X1),np.array(X2)
     
+class NewWhaleGenerator(tf.keras.utils.Sequence):
+    def __init__(self, Ids, newWhale, transFun, HalfBatch=8):
+        self.Ids = Ids # a list of lists, like [[w1_img1,w1_img2...],[w2_img1,w2_img2...],...]
+        self.newWhale = newWhale # a list of new_whale
+        self.transFun = transFun
+        self.HalfBatch = HalfBatch
+        self.y = np.zeros(HalfBatch*2,dtype=np.float32) 
+        self.y[HalfBatch:] = 1
+        
+    def __len__(self):
+        'Denotes the number of batches per epoch.'
+        return len(self.Ids)//self.HalfBatch
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        indexes = [item[np.random.randint(len(item))] for item in self.Ids[index*self.HalfBatch:(index+1)*self.HalfBatch]]
+        indexes = indexes + self.newWhale[index*self.HalfBatch:(index+1)*self.HalfBatch]
+        X = self.__data_generation(indexes)
+        return X, self.y
+        
+    def __data_generation(self, indexes):
+        imgs_list = [self.transFun(np.load(img))[:,:,np.newaxis] for img in indexes]
+        return np.array(imgs_list)
     
+    def on_epoch_begin(self):
+        np.random.shuffle(self.Ids)
+        np.random.shuffle(self.newWhale)
+            
 class PredictGenerator(tf.keras.utils.Sequence):
     # used for TTA prediction
     def __init__(self, Ids, transFun, TTASize, color, keepOrg=True):
@@ -315,6 +342,17 @@ def exp_loss(y_true,y_pred):
 
 def cross_entropy_loss(y_true,y_pred):
     return tf.nn.sigmoid_cross_entropy_with_logits(labels=y_true,logits=y_pred)
+
+def create_newWhale_model(lr,conv_base,nodes=[512,1],activations=['relu','sigmoid'],BatchNorm=True):
+    img = layers.Input(shape=(224,224,1))
+    x = conv_base(img)
+    for i,act in zip(nodes,activations):
+        if BatchNorm:
+            x = layers.BatchNormalization()(x)
+        x = layers.Dense(i,activation=act)(x)
+    train_model = models.Model(img,x)
+    train_model.compile(loss='binary_crossentropy',optimizer=optimizers.Adam(lr=lr),metrics=['acc'])
+    return train_model
 
 def create_model(lr,distanceFun,lossFun,conv_base,IsColor,nodes=[512],activations=[None]):
     ''' distanceFun takes feature1,feature2 as inputs and returns their 'distance'
