@@ -164,7 +164,7 @@ class STN_multiple_model(nn.Module):
             return torch.cat([self.convNet(x) for x in x_tsf],1)
     
     
-l2_distance = lambda x1,x2: torch.mean((x1-x2)**2,1)
+l2_distance = lambda x1,x2: torch.mean((x1-x2)**2,-1)
 l2_distance_np = lambda x1,x2: np.mean((x1-x2)**2,3)
 
 def loss_func_generator(HalfBatch,margin,distanceFun):
@@ -177,6 +177,32 @@ def loss_func_generator(HalfBatch,margin,distanceFun):
         feature_neg = feature_pos[index]
         d_pos = distanceFun(feature_anchor,feature_pos)
         d_neg = distanceFun(feature_anchor,feature_neg)
+        margin_torch = torch.ones_like(d_pos,device='cuda:0')*margin
+        triplet_loss = torch.mean(torch.max(d_pos-d_neg,margin_torch))
+        return triplet_loss
+    return loss_func
+
+def loss_func_generator_hard(HalfBatch,margin,distanceFun):
+    def loss_func(model,data):
+        X1,X2 = data
+        n = X1.shape[0]
+        index_ = torch.zeros(n,dtype=torch.long)
+        feature_anchor = model(X1)
+        feature_pos = model(X2)
+        dist_matrix = distanceFun(feature_anchor.unsqueeze(1),feature_pos.unsqueeze(0))
+        
+        # positive case
+        d_pos = torch.diag(dist_matrix)
+        
+        # negative case, pick the hardest case, i.e. smallest distance other than diag
+        _,top2 = torch.topk(dist_matrix,2,1,False,True)
+        for i,item in enumerate(top2):
+            if item[0]==i:
+                index_[i] = item[1]
+            else:
+                index_[i] = item[0]     
+        d_neg = dist_matrix[torch.arange(n),index_]
+        
         margin_torch = torch.ones_like(d_pos,device='cuda:0')*margin
         triplet_loss = torch.mean(torch.max(d_pos-d_neg,margin_torch))
         return triplet_loss
