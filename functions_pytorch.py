@@ -208,6 +208,35 @@ def loss_func_generator_hard(HalfBatch,margin,distanceFun):
         return triplet_loss
     return loss_func
 
+def loss_func_generator_softmax(HalfBatch,distanceFun):
+    loss = nn.CrossEntropyLoss()
+    target = torch.arange(HalfBatch,device='cuda:0')
+    def loss_func(model,data):
+        X1,X2 = data
+        feature_anchor = model(X1)
+        feature_pos = model(X2)
+        dist_matrix = -distanceFun(feature_anchor.unsqueeze(1),feature_pos.unsqueeze(0))
+        return loss(dist_matrix,target)
+    return loss_func
+
+def loss_func_generator_softmax2(HalfBatch,distanceFun):
+    loss = nn.CrossEntropyLoss()
+    target = torch.arange(HalfBatch,device='cuda:0')
+    mask = torch.ones((HalfBatch,HalfBatch*2),device='cuda:0')
+    mask[torch.arange(HalfBatch),HalfBatch + torch.arange(HalfBatch)] = 0
+    add = torch.zeros((HalfBatch,HalfBatch*2),device='cuda:0')
+    add[torch.arange(HalfBatch),HalfBatch + torch.arange(HalfBatch)] = -1e7
+    def loss_func(model,data):
+        X1,X2 = data
+        feature_anchor = model(X1)
+        feature_pos = model(X2)
+        feature_cat = torch.cat([feature_pos,feature_anchor],0)
+        dist_matrix = -distanceFun(feature_anchor.unsqueeze(1),feature_cat.unsqueeze(0))
+        dist_matrix = dist_matrix * mask + add
+        return loss(dist_matrix,target)
+    return loss_func
+
+
 def top_k(d,k=5,returnValue=False):
     top = np.argpartition(d,k)[0:k]
     index = np.argsort(d[top])
