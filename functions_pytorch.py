@@ -36,7 +36,7 @@ class TripletGenerator(Dataset):
     def __getitem__(self, index):
         r = np.random.rand()
         if r < self.p:
-            indexes = [self.newWhale[int(r*self.n_newWhale)]]
+            indexes = [self.newWhale[int(np.random.rand()*self.n_newWhale)]]
         else:
             img_list = self.Ids.iloc[index]['Imgs']
             np.random.shuffle(img_list)
