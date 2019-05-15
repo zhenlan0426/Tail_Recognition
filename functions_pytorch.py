@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 import numpy as np
+from torch.utils.data import Sampler
 
 def plot_batch(X1,X2):
     n = X1.shape[0]
@@ -86,7 +87,67 @@ class PredictGenerator():
         imgs_list = [img_ if ((j < size_) and self.keepOrg) else self.transFun(img_)
                      for j,img_ in enumerate(imgs_list * (self.TTASize//size_) + imgs_list[:self.TTASize%size_])]
         return torch.from_numpy(np.array(imgs_list).transpose(0,3,1,2))
+
+class PredictGenerator2():
+    # used for TTA prediction
+    # not supported for dataloader
+    def __init__(self, Ids, transFun, TTASize, batch_size, keepOrg=True):
+        self.Ids = Ids # a list of lists, like [[w1_img1,w1_img2...],[w2_img1,w2_img2...],...]
+        self.transFun = transFun
+        self.TTASize = TTASize
+        self.batch_size = batch_size
+        self.keepOrg = keepOrg
+        assert len(Ids)%batch_size==0,"len(Ids)%batch_size should be 0"
+        
+    def __len__(self):
+        'Denotes the number of batches per epoch.'
+        return len(self.Ids)//self.batch_size
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        if index < len(self):
+            X = [self.__data_generation_color(self.__create2(self.Ids[index*self.batch_size+i])) \
+                 for i in range(self.batch_size)]
+            return torch.cat(X)
+        else:
+            raise IndexError
+
+    def __create2(self,img_list):
+        len_ = len(img_list)
+        np.random.shuffle(img_list)
+        if len_ <= self.TTASize:
+            return img_list
+        else:
+            return img_list[:self.TTASize]
+        
+    def __data_generation_color(self, indexes):
+        imgs_list = [np.load(img) for img in indexes]
+        size_ = len(indexes)
+        imgs_list = [img_ if ((j < size_) and self.keepOrg) else self.transFun(img_)
+                     for j,img_ in enumerate(imgs_list * (self.TTASize//size_) + imgs_list[:self.TTASize%size_])]
+        return torch.from_numpy(np.array(imgs_list).transpose(0,3,1,2))
     
+class AdvSample(Sampler):
+    # serves as batch_sampler
+    # distDict is a dict, key being whale as int, and value being a list of top k whales misclassified
+    # e.g. {1:[3,78,23],2:[15,35,753]...}
+    # maxImg is max int a whale can take
+    def __init__(self,distDict,numBatch,batch_size,maxImg):
+        self.distDict = distDict
+        self.numBatch = numBatch
+        self.batch_size = batch_size
+        self.maxImg = maxImg + 1 #randint does not include upper bound
+        
+    def __len__(self):
+        return self.numBatch
+    
+    def __iter__(self):
+        for i in range(self.numBatch):
+            imgs_int = [np.random.randint(0,self.maxImg)]
+            for j in range(self.batch_size-1):
+                imgs_int.append(np.random.choice(self.distDict[imgs_int[j]]))
+            yield imgs_int    
+            
 class SpatialTransformerNet(nn.Module):
     def __init__(self,localization,fc_loc,size=None):
         # locNet should be a model that has 6 outputs for affine transformation
